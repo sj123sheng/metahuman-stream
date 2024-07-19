@@ -52,6 +52,7 @@ class PlayerStreamTrack(MediaStreamTrack):
             raise Exception
 
         if self.kind == 'video':
+            print(f'hasattr(_timestamp) {hasattr(self, "_timestamp")}')
             if hasattr(self, "_timestamp"):
                 #self._timestamp = (time.time()-self._start) * VIDEO_CLOCK_RATE
                 self._timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
@@ -203,4 +204,4 @@ class HumanPlayer:
             self.__container = None
 
     def __log_debug(self, msg: str, *args) -> None:
-        logger.debug(f"HumanPlayer {msg}", *args)
+        print(f"HumanPlayer {msg}", *args)
