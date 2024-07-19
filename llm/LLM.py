@@ -19,8 +19,8 @@ class LLM:
         self.mode = mode
 
     def init_model(self, model_name, model_path=None, api_key=None, proxy_url=None):
-        if model_name not in ['Qwen', 'Gemini', 'ChatGPT', 'VllmGPT']:
-            raise ValueError("model_name must be 'ChatGPT', 'VllmGPT', 'Qwen', or 'Gemini'(其他模型还未集成)")
+        if model_name not in ['Qwen', 'Gemini', 'ChatGPT', 'VllmGPT', 'QwenBaiLian']:
+            raise ValueError("model_name must be 'ChatGPT', 'VllmGPT', 'Qwen', 'QwenBaiLian', or 'Gemini'(其他模型还未集成)")
 
         if model_name == 'Gemini':
             llm = Gemini(model_path, api_key, proxy_url)
