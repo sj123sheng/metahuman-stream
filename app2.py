@@ -114,6 +114,7 @@ async def offer(request):
     )
 
 async def human(request):
+    global stream_response
     result = ''
     params = await request.json()
     if params.get('interrupt'):
