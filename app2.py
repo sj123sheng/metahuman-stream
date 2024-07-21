@@ -142,6 +142,7 @@ async def human(request):
                     if single_res is not None:
                         interval_res += str_single_res
                         result += str_single_res
+                    if len(interval_res) > 50:
                         await stream_response.write(str_single_res.encode('utf-8'))
                     if len(interval_res) > 150 or (finish_reason != "null" and len(interval_res) > 1):
                         print(f'interval_res {interval_res}')
