@@ -44,7 +44,7 @@ def echo_socket(ws):
 def llm_response(message):
     from llm.LLM import LLM
     # llm = LLM().init_model('Gemini', model_path= 'gemini-pro',api_key='Your API Key', proxy_url=None)
-    # llm = LLM().init_model('ChatGPT', model_path= 'gpt-3.5-turbo',api_key='fk227660-AHXAgsfcCN7YPNICluZK0DinAGYDpiNS')
+    # llm = LLM().init_model('ChatGPT', model_path= 'gpt-3.5-turbo',api_key='Your API Key')
     # llm = LLM().init_model('VllmGPT', model_path= 'THUDM/chatglm3-6b')
     # llm = LLM().init_model('Qwen', model_path= 'Qwen/Qwen-1_8B-Chat')
     print(f"api_key:{opt.api_key}")
