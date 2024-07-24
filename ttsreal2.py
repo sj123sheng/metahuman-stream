@@ -36,13 +36,13 @@ class BaseTTS:
         self.msgqueue.queue.clear()
         self.state = State.PAUSE
 
-    def put_msg_txt(self,msg): 
+    def put_msg_txt(self,msg):
         self.msgqueue.put(msg)
 
     def render(self,quit_event):
         process_thread = Thread(target=self.process_tts, args=(quit_event,))
         process_thread.start()
-    
+
     def process_tts(self,quit_event):
         while not quit_event.is_set():
             try:
@@ -52,10 +52,10 @@ class BaseTTS:
                 continue
             self.txt_to_audio(msg)
         print('ttsreal thread stop')
-    
+
     def txt_to_audio(self,msg):
         pass
-    
+
 
 ###########################################################################################
 class EdgeTTS(BaseTTS):
@@ -77,7 +77,7 @@ class EdgeTTS(BaseTTS):
         #if streamlen>0:  #skip last frame(not 20ms)
         #    self.queue.put(stream[idx:])
         self.input_stream.seek(0)
-        self.input_stream.truncate() 
+        self.input_stream.truncate()
 
     def __create_bytes_stream(self,byte_stream):
         #byte_stream=BytesIO(buffer)
@@ -88,13 +88,13 @@ class EdgeTTS(BaseTTS):
         if stream.ndim > 1:
             print(f'[WARN] audio has {stream.shape[1]} channels, only use the first.')
             stream = stream[:, 0]
-    
+
         if sample_rate != self.sample_rate and stream.shape[0]>0:
             print(f'[WARN] audio sample rate is {sample_rate}, resampling into {self.sample_rate}.')
             stream = resampy.resample(x=stream, sr_orig=sample_rate, sr_new=self.sample_rate)
 
         return stream
-    
+
     async def __main(self,voicename: str, text: str):
         communicate = edge_tts.Communicate(text, voicename)
 
@@ -112,11 +112,11 @@ class EdgeTTS(BaseTTS):
 
 ###########################################################################################
 class VoitsTTS(BaseTTS):
-    def txt_to_audio(self,msg): 
+    def txt_to_audio(self,msg):
         self.stream_tts(
             self.gpt_sovits(
                 msg,
-                self.opt.REF_FILE,  
+                self.opt.REF_FILE,
                 self.opt.REF_TEXT,
                 "zh", #en args.language,
                 self.opt.CUT_PUNC,
@@ -145,7 +145,7 @@ class VoitsTTS(BaseTTS):
         if res.status_code != 200:
             print("Error:", res.text)
             return
-            
+
         first = True
         for chunk in res.iter_content(chunk_size=32000): # 1280 32K*20ms*2
             if first:
@@ -174,7 +174,7 @@ class VoitsTTS(BaseTTS):
                     incomplete_chunk = b""
                 if len(chunk) > 0:
                     # 将字节流转换为浮点数流
-                    stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float16) / 16384
+                    stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
                     stream = resampy.resample(x=stream, sr_orig=32000, sr_new=self.sample_rate)
                     streamlen = stream.shape[0]
                     print(f"Received audio chunk size: {len(chunk)} stream size: {streamlen}")
@@ -190,7 +190,7 @@ class XTTS(BaseTTS):
         super().__init__(opt,parent)
         self.speaker = self.get_speaker(opt.REF_FILE, opt.TTS_SERVER)
 
-    def txt_to_audio(self,msg): 
+    def txt_to_audio(self,msg):
         self.stream_tts(
             self.xtts(
                 msg,
@@ -233,10 +233,10 @@ class XTTS(BaseTTS):
                 yield chunk
 
         print("xtts response.elapsed:", res.elapsed)
-    
+
     def stream_tts(self,audio_stream):
         for chunk in audio_stream:
-            if chunk is not None and len(chunk)>0:          
+            if chunk is not None and len(chunk)>0:
                 stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
                 stream = resampy.resample(x=stream, sr_orig=24000, sr_new=self.sample_rate)
                 #byte_stream=BytesIO(buffer)
@@ -246,4 +246,4 @@ class XTTS(BaseTTS):
                 while streamlen >= self.chunk:
                     self.parent.put_audio_frame(stream[idx:idx+self.chunk])
                     streamlen -= self.chunk
-                    idx += self.chunk 
+                    idx += self.chunk

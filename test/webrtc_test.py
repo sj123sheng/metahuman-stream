@@ -36,7 +36,7 @@ async def post(url, data):
         return None
 
 
-video_file = "/Users/xiling/Downloads/数字人V2/poyo.mp4"
+video_file = "/Users/xiling/Downloads/数字人V2/下载.wav"
 
 
 def player_worker_thread(
@@ -142,7 +142,7 @@ def generate_video_frames2(player, loop):
 
 def generate_media_tracks(player, loop):
     container = av.open(video_file)  # 打开视频文件
-    stream_video = next(s for s in container.streams if s.type == 'video')  # 获取视频流
+    stream_video = None # next(s for s in container.streams if s.type == 'video')  # 获取视频流
     stream_audio = next((s for s in container.streams if s.type == 'audio'), None)  # 获取音频流，如果不存在则为None
 
     for packet in container.demux(stream_video, stream_audio):  # 按顺序解复用视频和音频帧
@@ -155,13 +155,14 @@ def generate_media_tracks(player, loop):
                 player.video.push_frame(VideoFrame.from_ndarray(bgr_img, format='bgr24'), loop)  # 推送视频帧到轨道
             elif isinstance(frame, AudioFrame) and stream_audio is not None:
                 # 处理音频帧
-                audio_data = frame.to_ndarray().astype(np.int16)  # 转换为int16
-                new_data = resampy.resample(audio_data, frame.sample_rate, 16000)
+                # audio_data = frame.to_ndarray().astype(np.int16)  # 转换为int16
+                new_data = resampy.resample(frame.to_ndarray(), 32000, 16000)
                 # 创建新的AudioFrame，假设单声道，采样率为原音频帧的采样率
-                new_audio_frame = AudioFrame(format='s16', layout='mono', samples= new_data.shape[0] * 1024)
-                new_audio_frame.planes[0].update(audio_data.tobytes())
-                new_audio_frame.sample_rate = 16000  # 确保设置正确的采样率
-                player.audio.push_frame(new_audio_frame, loop)
+                new_data = (new_data * 32767).astype(np.int16)
+                new_frame = AudioFrame(format='s16', layout='mono', samples=frame.samples)
+                new_frame.planes[0].update(new_data.tobytes())
+                new_frame.sample_rate=16000
+                player.audio.push_frame(new_frame, loop)
 
                 # 直接推送音频帧到轨道
                 # player.audio.push_frame(frame, loop)  # 假定PlayerStreamTrackTest支持直接推送AudioFrame
@@ -219,7 +220,8 @@ def generate_video_frames3(player, loop):
 
 if __name__ == '__main__':
     # 示例使用方法
-    push_url = "http://118.31.45.70/rtc/v1/whip/?app=live&stream=livestream&secret=123"  # 替换为实际的信令服务器 URL
+    # push_url = "http://118.31.45.70/rtc/v1/whip/?app=live&stream=livestream&secret=123"  # 替换为实际的信令服务器 URL
+    push_url = "srt://mj-push.linkheer.com:1105?streamid=#!::h=mj-push.linkheer.com,r=/miaojie/xilingtest1?auth_key=1721789483-0-0-50ca3f8cb19091b59c81de0d97f49cfb,m=publish"  # 替换为实际的信令服务器 URL
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     audio_loop = asyncio.new_event_loop()
@@ -227,7 +229,7 @@ if __name__ == '__main__':
 
     player = HumanPlayer()
     # 启动推送视频帧的线程
-    video_thread = threading.Thread(target=generate_media_tracks, args=(player, loop))
+    video_thread = threading.Thread(target=generate_video_frames, args=(player, loop))
     video_thread.start()
 
     loop.run_until_complete(run(push_url, player))
