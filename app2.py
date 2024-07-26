@@ -143,7 +143,7 @@ async def human(request):
                         interval_res += str_single_res
                         result += str_single_res
                         await stream_response.write(str_single_res.encode('utf-8'))
-                    if len(interval_res) > 300 or (finish_reason != "null" and len(interval_res) > 1):
+                    if len(interval_res) > 1000 or (finish_reason != "null" and len(interval_res) > 1):
                         print(f'interval_res {interval_res}')
                         nerfreal.put_msg_txt(remove_chars(interval_res, chars_to_remove))
                         interval_res = ""  # 重置 interval_res 以便重新累积
