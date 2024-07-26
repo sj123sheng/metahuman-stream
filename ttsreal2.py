@@ -174,15 +174,16 @@ class VoitsTTS(BaseTTS):
                     incomplete_chunk = b""
                 if len(chunk) > 0:
                     # 将字节流转换为浮点数流
-                    stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
+                    stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float16) / np.float16(32767)
                     stream = resampy.resample(x=stream, sr_orig=32000, sr_new=self.sample_rate)
                     streamlen = stream.shape[0]
-                    print(f"Received audio chunk size: {len(chunk)} stream size: {streamlen}")
+                    # print(f"Received audio chunk size: {len(chunk)} stream size: {streamlen}")
                     idx=0
                     while streamlen >= self.chunk:
                         self.parent.put_audio_frame(stream[idx:idx+self.chunk])
                         streamlen -= self.chunk
                         idx += self.chunk
+                    self.parent.put_audio_frame(stream[idx:])
 
 ###########################################################################################
 class XTTS(BaseTTS):

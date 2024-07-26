@@ -220,8 +220,8 @@ def generate_video_frames3(player, loop):
 
 if __name__ == '__main__':
     # 示例使用方法
-    # push_url = "http://118.31.45.70/rtc/v1/whip/?app=live&stream=livestream&secret=123"  # 替换为实际的信令服务器 URL
-    push_url = "srt://mj-push.linkheer.com:1105?streamid=#!::h=mj-push.linkheer.com,r=/miaojie/xilingtest1?auth_key=1721789483-0-0-50ca3f8cb19091b59c81de0d97f49cfb,m=publish"  # 替换为实际的信令服务器 URL
+    push_url = "http://118.31.45.70/rtc/v1/whip/?app=live&stream=livestream&secret=123"  # 替换为实际的信令服务器 URL
+    # push_url = "srt://mj-push.linkheer.com:1105?streamid=#!::h=mj-push.linkheer.com,r=/miaojie/xilingtest1?auth_key=1721789483-0-0-50ca3f8cb19091b59c81de0d97f49cfb,m=publish"  # 替换为实际的信令服务器 URL
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     audio_loop = asyncio.new_event_loop()
@@ -233,4 +233,4 @@ if __name__ == '__main__':
     video_thread.start()
 
     loop.run_until_complete(run(push_url, player))
-    loop.run_forever()
+    # loop.run_forever()
