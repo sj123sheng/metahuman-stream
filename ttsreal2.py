@@ -128,7 +128,7 @@ class VoitsTTS(BaseTTS):
         start = time.perf_counter()
         req={
             'text':text,
-            'text_language':language,
+            'text_language':"auto",
             'refer_wav_path':reffile,
             'prompt_text':reftext,
             'prompt_language':language,
