@@ -158,34 +158,18 @@ class VoitsTTS(BaseTTS):
         print("gpt_sovits response.elapsed:", res.elapsed)
 
     def stream_tts(self,audio_stream):
-        incomplete_chunk = b""  # 缓存不完整数据块
         for chunk in audio_stream:
             if chunk is not None and len(chunk)>0:
-                # 在此处理音频块
-                # 合并不完整的数据块与当前的数据块
-                chunk = incomplete_chunk + chunk
-                # 检查是否可以处理当前数据块
-                if len(chunk) % 2 != 0:
-                    # 如果不能处理，将最后一个字节缓存到 incomplete_chunk
-                    incomplete_chunk = chunk[-1:]
-                    chunk = chunk[:-1]
-                else:
-                    # 数据块大小为 2 的倍数，清空 incomplete_chunk
-                    incomplete_chunk = b""
-                if len(chunk) > 0:
-                    # 将字节流转换为浮点数流
-                    stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
-                    stream = resampy.resample(x=stream, sr_orig=32000, sr_new=self.sample_rate)
-                    streamlen = stream.shape[0]
-                    # print(f"Received audio chunk size: {len(chunk)} stream size: {streamlen}")
-                    idx=0
-                    while streamlen >= self.chunk:
-                        self.parent.put_audio_frame(stream[idx:idx+self.chunk])
-                        streamlen -= self.chunk
-                        idx += self.chunk
-                    self.parent.put_audio_frame(stream[idx:])
+                stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
+                stream = resampy.resample(x=stream, sr_orig=32000, sr_new=self.sample_rate)
+                streamlen = stream.shape[0]
+                idx=0
+                while streamlen >= self.chunk:
+                    self.parent.put_audio_frame(stream[idx:idx+self.chunk])
+                    streamlen -= self.chunk
+                    idx += self.chunk
 
-###########################################################################################
+                ###########################################################################################
 class XTTS(BaseTTS):
     def __init__(self, opt, parent):
         super().__init__(opt,parent)
