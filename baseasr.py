@@ -34,7 +34,7 @@ class BaseASR:
 
     def get_audio_frame(self):        
         try:
-            frame = self.queue.get(block=True,timeout=0.02)
+            frame = self.queue.get(block=True,timeout=0.05)
             type = 0
             #print(f'[INFO] get frame {frame.shape}')
         except queue.Empty:
