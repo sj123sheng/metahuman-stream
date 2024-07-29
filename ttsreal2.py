@@ -162,12 +162,13 @@ class VoitsTTS(BaseTTS):
             if chunk is not None and len(chunk)>0:
                 stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
                 stream = resampy.resample(x=stream, sr_orig=32000, sr_new=self.sample_rate)
-                streamlen = stream.shape[0]
-                idx=0
-                while streamlen >= self.chunk:
-                    self.parent.put_audio_frame(stream[idx:idx+self.chunk])
-                    streamlen -= self.chunk
-                    idx += self.chunk
+                self.parent.put_audio_frame(stream)
+                # streamlen = stream.shape[0]
+                # idx=0
+                # while streamlen >= self.chunk:
+                #     self.parent.put_audio_frame(stream[idx:idx+self.chunk])
+                #     streamlen -= self.chunk
+                #     idx += self.chunk
 
                 ###########################################################################################
 class XTTS(BaseTTS):
