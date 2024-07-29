@@ -146,8 +146,7 @@ async def human(request):
                     if len(interval_res) > 200 or (finish_reason != "null" and len(interval_res) > 1):
                         print(f'interval_res {interval_res}')
                         interval_res = ""  # 重置 interval_res 以便重新累积
-                    if finish_reason != "null":
-                        nerfreal.put_msg_txt(remove_chars(interval_res, chars_to_remove))
+            nerfreal.put_msg_txt(remove_chars(result, chars_to_remove))
         except asyncio.CancelledError:
             print('Client disconnected')
         except Exception as e:
