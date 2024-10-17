@@ -27,6 +27,7 @@ from ttsreal2 import EdgeTTS,VoitsTTS,XTTS
 from museasr import MuseASR
 import asyncio
 from av import AudioFrame, VideoFrame
+from basereal import BaseReal
 
 from tqdm import tqdm
 def read_imgs(img_list):
@@ -45,7 +46,7 @@ def __mirror_index(size, index):
         return res
     else:
         return size - res - 1 
-
+@torch.no_grad()
 def inference(render_event,batch_size,latents_out_path,audio_feat_queue,audio_out_queue,res_frame_queue,
               ): #vae, unet, pe,timesteps
     
@@ -125,9 +126,10 @@ def inference(render_event,batch_size,latents_out_path,audio_feat_queue,audio_ou
     print('musereal inference processor stop')
 
 @torch.no_grad()
-class MuseReal:
+class MuseReal(BaseReal):
     def __init__(self, opt):
-        self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
+        super().__init__(opt)
+        #self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
         self.W = opt.W
         self.H = opt.H
 
@@ -156,14 +158,8 @@ class MuseReal:
         self.__loadmodels()
         self.__loadavatar()
 
-        self.asr = MuseASR(opt,self.audio_processor)
+        self.asr = MuseASR(opt,self,self.audio_processor)
         self.asr.warm_up()
-        if opt.tts == "edgetts":
-            self.tts = EdgeTTS(opt,self)
-        elif opt.tts == "gpt-sovits":
-            self.tts = VoitsTTS(opt,self)
-        elif opt.tts == "xtts":
-            self.tts = XTTS(opt,self)
         #self.__warm_up()
         
         self.render_event = mp.Event()
@@ -193,17 +189,6 @@ class MuseReal:
         input_mask_list = glob.glob(os.path.join(self.mask_out_path, '*.[jpJP][pnPN]*[gG]'))
         input_mask_list = sorted(input_mask_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
         self.mask_list_cycle = read_imgs(input_mask_list)
-        
-    
-    def put_msg_txt(self,msg):
-        self.tts.put_msg_txt(msg)
-    
-    def put_audio_frame(self,audio_chunk): #16khz 20ms pcm
-        self.asr.put_audio_frame(audio_chunk)
-
-    def pause_talk(self):
-        self.tts.pause_talk()
-        self.asr.pause_talk()
     
 
     def __mirror_index(self, index):
@@ -246,9 +231,19 @@ class MuseReal:
                 res_frame,idx,audio_frames = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
-            if audio_frames[0][1]==1 and audio_frames[1][1]==1: #全为静音数据，只需要取fullimg
-                combine_frame = self.frame_list_cycle[idx]
+            if audio_frames[0][1]!=0 and audio_frames[1][1]!=0: #全为静音数据，只需要取fullimg
+                self.speaking = False
+                audiotype = audio_frames[0][1]
+                if self.custom_index.get(audiotype) is not None: #有自定义视频
+                    mirindex = self.mirror_index(len(self.custom_img_cycle[audiotype]),self.custom_index[audiotype])
+                    combine_frame = self.custom_img_cycle[audiotype][mirindex]
+                    self.custom_index[audiotype] += 1
+                    # if not self.custom_opt[audiotype].loop and self.custom_index[audiotype]>=len(self.custom_img_cycle[audiotype]):
+                    #     self.curr_state = 1  #当前视频不循环播放，切换到静音状态
+                else:
+                    combine_frame = self.frame_list_cycle[idx]
             else:
+                self.speaking = True
                 bbox = self.coord_list_cycle[idx]
                 ori_frame = copy.deepcopy(self.frame_list_cycle[idx])
                 x1, y1, x2, y2 = bbox
@@ -265,7 +260,9 @@ class MuseReal:
 
             image = combine_frame #(outputs['image'] * 255).astype(np.uint8)
             new_frame = VideoFrame.from_ndarray(image, format="bgr24")
-            asyncio.run_coroutine_threadsafe(video_track._queue.put(new_frame), loop) 
+            asyncio.run_coroutine_threadsafe(video_track._queue.put(new_frame), loop)
+            if self.recording:
+                self.recordq_video.put(new_frame)  
 
             for audio_frame in audio_frames:
                 frame,type = audio_frame
@@ -276,6 +273,8 @@ class MuseReal:
                 # if audio_track._queue.qsize()>10:
                 #     time.sleep(0.1)
                 asyncio.run_coroutine_threadsafe(audio_track._queue.put(new_frame), loop)
+                if self.recording:
+                    self.recordq_audio.put(new_frame)
         print('musereal process_frames thread stop') 
             
     def render(self,quit_event,loop=None,audio_track=None,video_track=None):
@@ -283,6 +282,7 @@ class MuseReal:
         #     self.asr.warm_up()
 
         self.tts.render(quit_event)
+        self.init_customindex()
         process_thread = Thread(target=self.process_frames, args=(quit_event,loop,audio_track,video_track))
         process_thread.start()
 

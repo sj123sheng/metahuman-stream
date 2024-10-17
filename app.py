@@ -17,12 +17,14 @@ from aiohttp import web
 import aiohttp
 import aiohttp_cors
 from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.rtcrtpsender import RTCRtpSender
 from webrtc import HumanPlayer
 
 import argparse
 
 import shutil
 import asyncio
+import string
 
 
 app = Flask(__name__)
@@ -51,14 +53,58 @@ def echo_socket(ws):
                 nerfreal.put_msg_txt(message)
 
 
-def llm_response(message):
-    from llm.LLM import LLM
-    # llm = LLM().init_model('Gemini', model_path= 'gemini-pro',api_key='Your API Key', proxy_url=None)
-    # llm = LLM().init_model('ChatGPT', model_path= 'gpt-3.5-turbo',api_key='Your API Key')
-    llm = LLM().init_model('VllmGPT', model_path= 'THUDM/chatglm3-6b')
-    response = llm.chat(message)
-    print(response)
-    return response
+# def llm_response(message):
+#     from llm.LLM import LLM
+#     # llm = LLM().init_model('Gemini', model_path= 'gemini-pro',api_key='Your API Key', proxy_url=None)
+#     # llm = LLM().init_model('ChatGPT', model_path= 'gpt-3.5-turbo',api_key='Your API Key')
+#     llm = LLM().init_model('VllmGPT', model_path= 'THUDM/chatglm3-6b')
+#     response = llm.chat(message)
+#     print(response)
+#     return response
+
+def llm_response(message,nerfreal):
+    start = time.perf_counter()
+    from openai import OpenAI
+    client = OpenAI(
+        # 如果您没有配置环境变量，请在此处用您的API Key进行替换
+        api_key=os.getenv("DASHSCOPE_API_KEY"),
+        # 填写DashScope SDK的base_url
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    end = time.perf_counter()
+    print(f"llm Time init: {end-start}s")
+    completion = client.chat.completions.create(
+        model="qwen-plus",
+        messages=[{'role': 'system', 'content': 'You are a helpful assistant.'},
+                  {'role': 'user', 'content': message}],
+        stream=True,
+        # 通过以下设置，在流式输出的最后一行展示token使用信息
+        stream_options={"include_usage": True}
+    )
+    result=""
+    first = True
+    for chunk in completion:
+        if len(chunk.choices)>0:
+            #print(chunk.choices[0].delta.content)
+            if first:
+                end = time.perf_counter()
+                print(f"llm Time to first chunk: {end-start}s")
+                first = False
+            msg = chunk.choices[0].delta.content
+            lastpos=0
+            #msglist = re.split('[,.!;:，。！?]',msg)
+            for i, char in enumerate(msg):
+                if char in ",.!;:，。！？：；" :
+                    result = result+msg[lastpos:i+1]
+                    lastpos = i+1
+                    if len(result)>10:
+                        print(result)
+                        nerfreal.put_msg_txt(result)
+                        result=""
+            result = result+msg[lastpos:]
+    end = time.perf_counter()
+    print(f"llm Time to last chunk: {end-start}s")
+    nerfreal.put_msg_txt(result)            
 
 @sockets.route('/humanchat')
 def chat_socket(ws):
@@ -115,6 +161,12 @@ async def offer(request):
     player = HumanPlayer(nerfreals[sessionid])
     audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)
+    capabilities = RTCRtpSender.getCapabilities("video")
+    preferences = list(filter(lambda x: x.name == "H264", capabilities.codecs))
+    preferences += list(filter(lambda x: x.name == "VP8", capabilities.codecs))
+    preferences += list(filter(lambda x: x.name == "rtx", capabilities.codecs))
+    transceiver = pc.getTransceivers()[1]
+    transceiver.setCodecPreferences(preferences)
 
     await pc.setRemoteDescription(offer)
 
@@ -140,8 +192,8 @@ async def human(request):
     if params['type']=='echo':
         nerfreals[sessionid].put_msg_txt(params['text'])
     elif params['type']=='chat':
-        res=await asyncio.get_event_loop().run_in_executor(None, llm_response(params['text']))                          
-        nerfreals[sessionid].put_msg_txt(res)
+        res=await asyncio.get_event_loop().run_in_executor(None, llm_response, params['text'],nerfreals[sessionid])                         
+        #nerfreals[sessionid].put_msg_txt(res)
 
     return web.Response(
         content_type="application/json",
@@ -149,6 +201,70 @@ async def human(request):
             {"code": 0, "data":"ok"}
         ),
     )
+
+async def humanaudio(request):
+    try:
+        form= await request.post()
+        sessionid = int(form.get('sessionid',0))
+        fileobj = form["file"]
+        filename=fileobj.filename
+        filebytes=fileobj.file.read()
+        nerfreals[sessionid].put_audio_file(filebytes)
+
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps(
+                {"code": 0, "msg":"ok"}
+            ),
+        )
+    except Exception as e:
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps(
+                {"code": -1, "msg":"err","data": ""+e.args[0]+""}
+            ),
+        )
+
+async def set_audiotype(request):
+    params = await request.json()
+
+    sessionid = params.get('sessionid',0)    
+    nerfreals[sessionid].set_curr_state(params['audiotype'],params['reinit'])
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(
+            {"code": 0, "data":"ok"}
+        ),
+    )
+
+async def record(request):
+    params = await request.json()
+
+    sessionid = params.get('sessionid',0)
+    if params['type']=='start_record':
+        # nerfreals[sessionid].put_msg_txt(params['text'])
+        nerfreals[sessionid].start_recording("data/record_lasted.mp4")
+    elif params['type']=='end_record':
+        nerfreals[sessionid].stop_recording()
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(
+            {"code": 0, "data":"ok"}
+        ),
+    )
+
+async def is_speaking(request):
+    params = await request.json()
+
+    sessionid = params.get('sessionid',0)
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(
+            {"code": 0, "data": nerfreals[sessionid].is_speaking()}
+        ),
+    )
+
 
 async def on_shutdown(app):
     # close peer connections
@@ -303,11 +419,13 @@ if __name__ == '__main__':
     parser.add_argument('--bbox_shift', type=int, default=5)
     parser.add_argument('--batch_size', type=int, default=16)
 
-    parser.add_argument('--customvideo', action='store_true', help="custom video")
-    parser.add_argument('--customvideo_img', type=str, default='data/customvideo/img')
-    parser.add_argument('--customvideo_imgnum', type=int, default=1)
+    # parser.add_argument('--customvideo', action='store_true', help="custom video")
+    # parser.add_argument('--customvideo_img', type=str, default='data/customvideo/img')
+    # parser.add_argument('--customvideo_imgnum', type=int, default=1)
 
-    parser.add_argument('--tts', type=str, default='edgetts') #xtts gpt-sovits
+    parser.add_argument('--customvideo_config', type=str, default='')
+
+    parser.add_argument('--tts', type=str, default='edgetts') #xtts gpt-sovits cosyvoice
     parser.add_argument('--REF_FILE', type=str, default=None)
     parser.add_argument('--REF_TEXT', type=str, default=None)
     parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880') # http://localhost:9000
@@ -325,6 +443,10 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     #app.config.from_object(opt)
     #print(app.config)
+    opt.customopt = []
+    if opt.customvideo_config!='':
+        with open(opt.customvideo_config,'r') as file:
+            opt.customopt = json.load(file)
 
     if opt.model == 'ernerf':
         from ernerf.nerf_triplane.provider import NeRFDataset_Test
@@ -391,7 +513,6 @@ if __name__ == '__main__':
     for _ in range(opt.max_session):
         statreals.append(0)
 
-    #txt_to_audio('我是中国人,我来自北京')
     if opt.transport=='rtmp':
         thread_quit = Event()
         rendthrd = Thread(target=nerfreals[0].render,args=(thread_quit,))
@@ -402,6 +523,10 @@ if __name__ == '__main__':
     appasync.on_shutdown.append(on_shutdown)
     appasync.router.add_post("/offer", offer)
     appasync.router.add_post("/human", human)
+    appasync.router.add_post("/humanaudio", humanaudio)
+    appasync.router.add_post("/set_audiotype", set_audiotype)
+    appasync.router.add_post("/record", record)
+    appasync.router.add_post("/is_speaking", is_speaking)
     appasync.router.add_static('/',path='web')
 
     # Configure default CORS settings.
@@ -416,6 +541,12 @@ if __name__ == '__main__':
     for route in list(appasync.router.routes()):
         cors.add(route)
 
+    pagename='webrtcapi.html'
+    if opt.transport=='rtmp':
+        pagename='echoapi.html'
+    elif opt.transport=='rtcpush':
+        pagename='rtcpushapi.html'
+    print('start http server; http://<serverip>:'+str(opt.listenport)+'/'+pagename)
     def run_server(runner):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

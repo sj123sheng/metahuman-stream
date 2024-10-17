@@ -8,16 +8,30 @@ import os
 import time
 import torch.nn.functional as F
 import cv2
+import glob
 
-from asrreal import ASR
+from nerfasr import NerfASR
 from ttsreal import EdgeTTS,VoitsTTS,XTTS
 
 import asyncio
 from av import AudioFrame, VideoFrame
+from basereal import BaseReal
 
-class NeRFReal:
+#from imgcache import ImgCache
+
+from tqdm import tqdm
+def read_imgs(img_list):
+    frames = []
+    print('reading images...')
+    for img_path in tqdm(img_list):
+        frame = cv2.imread(img_path)
+        frames.append(frame)
+    return frames
+
+class NeRFReal(BaseReal):
     def __init__(self, opt, trainer, data_loader, debug=True):
-        self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
+        super().__init__(opt)
+        #self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
         self.W = opt.W
         self.H = opt.H
 
@@ -42,6 +56,13 @@ class NeRFReal:
 
         # playing seq from dataloader, or pause.
         self.loader = iter(data_loader)
+        frame_total_num = data_loader._data.end_index
+        if opt.fullbody:
+            input_img_list = glob.glob(os.path.join(self.opt.fullbody_img, '*.[jpJP][pnPN]*[gG]'))
+            input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+            #print('input_img_list:',input_img_list)
+            self.fullbody_list_cycle = read_imgs(input_img_list[:frame_total_num])
+            #self.imagecache = ImgCache(frame_total_num,self.opt.fullbody_img,1000)
 
         #self.render_buffer = np.zeros((self.W, self.H, 3), dtype=np.float32)
         #self.need_update = True # camera moved, should reset accumulation
@@ -55,17 +76,11 @@ class NeRFReal:
         #self.ind_index = 0
         #self.ind_num = trainer.model.individual_codes.shape[0]
 
-        self.customimg_index = 0
+        #self.customimg_index = 0
 
         # build asr
-        self.asr = ASR(opt)
+        self.asr = NerfASR(opt,self)
         self.asr.warm_up()
-        if opt.tts == "edgetts":
-            self.tts = EdgeTTS(opt,self)
-        elif opt.tts == "gpt-sovits":
-            self.tts = VoitsTTS(opt,self)
-        elif opt.tts == "xtts":
-            self.tts = XTTS(opt,self)
         
         '''
         video_path = 'video_stream'
@@ -111,27 +126,17 @@ class NeRFReal:
 
     def __exit__(self, exc_type, exc_value, traceback):
         if self.opt.asr:
-            self.asr.stop()
-
-    def put_msg_txt(self,msg):
-        self.tts.put_msg_txt(msg)
-
-    def put_audio_frame(self,audio_chunk): #16khz 20ms pcm
-        self.asr.put_audio_frame(audio_chunk)
-
-    def pause_talk(self):
-        self.tts.pause_talk()
-        self.asr.pause_talk()   
+            self.asr.stop()  
     
 
-    def mirror_index(self, index):
-        size = self.opt.customvideo_imgnum
-        turn = index // size
-        res = index % size
-        if turn % 2 == 0:
-            return res
-        else:
-            return size - res - 1   
+    # def mirror_index(self, index):
+    #     size = self.opt.customvideo_imgnum
+    #     turn = index // size
+    #     res = index % size
+    #     if turn % 2 == 0:
+    #         return res
+    #     else:
+    #         return size - res - 1   
 
     def test_step(self,loop=None,audio_track=None,video_track=None):
         
@@ -148,39 +153,62 @@ class NeRFReal:
             # use the live audio stream
             data['auds'] = self.asr.get_next_feat()
 
-        audiotype = 0
-        if self.opt.transport=='rtmp':
-            for _ in range(2):
-                frame,type = self.asr.get_audio_out()
-                audiotype += type
-                #print(f'[INFO] get_audio_out shape ',frame.shape)                
+        audiotype1 = 0
+        audiotype2 = 0
+        #send audio
+        for i in range(2):
+            frame,type = self.asr.get_audio_out()
+            if i==0:
+                audiotype1 = type
+            else:
+                audiotype2 = type
+            #print(f'[INFO] get_audio_out shape ',frame.shape)
+            if self.opt.transport=='rtmp':                
                 self.streamer.stream_frame_audio(frame)
-        else:
-            for _ in range(2):
-                frame,type = self.asr.get_audio_out()
-                audiotype += type
+            else: #webrtc
                 frame = (frame * 32767).astype(np.int16)
                 new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
                 new_frame.planes[0].update(frame.tobytes())
                 new_frame.sample_rate=16000
-                # if audio_track._queue.qsize()>10:
-                #     time.sleep(0.1)
-                asyncio.run_coroutine_threadsafe(audio_track._queue.put(new_frame), loop)  
+                asyncio.run_coroutine_threadsafe(audio_track._queue.put(new_frame), loop)
+
+        # if self.opt.transport=='rtmp':
+        #     for _ in range(2):
+        #         frame,type = self.asr.get_audio_out()
+        #         audiotype += type
+        #         #print(f'[INFO] get_audio_out shape ',frame.shape)                
+        #         self.streamer.stream_frame_audio(frame)
+        # else: #webrtc
+        #     for _ in range(2):
+        #         frame,type = self.asr.get_audio_out()
+        #         audiotype += type
+        #         frame = (frame * 32767).astype(np.int16)
+        #         new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
+        #         new_frame.planes[0].update(frame.tobytes())
+        #         new_frame.sample_rate=16000
+        #         # if audio_track._queue.qsize()>10:
+        #         #     time.sleep(0.1)
+        #         asyncio.run_coroutine_threadsafe(audio_track._queue.put(new_frame), loop)  
         #t = time.time()
-        if self.opt.customvideo and audiotype!=0:
-            self.loader = iter(self.data_loader) #init
-            imgindex  = self.mirror_index(self.customimg_index)
+        if audiotype1!=0 and audiotype2!=0: #全为静音数据
+            self.speaking = False
+        else:
+            self.speaking = True
+            
+        if audiotype1!=0 and audiotype2!=0 and self.custom_index.get(audiotype1) is not None: #不为推理视频并且有自定义视频
+            mirindex = self.mirror_index(len(self.custom_img_cycle[audiotype1]),self.custom_index[audiotype1])
+            #imgindex  = self.mirror_index(self.customimg_index)
             #print('custom img index:',imgindex)
-            image = cv2.imread(os.path.join(self.opt.customvideo_img, str(int(imgindex))+'.png'))
+            #image = cv2.imread(os.path.join(self.opt.customvideo_img, str(int(imgindex))+'.png'))
+            image = self.custom_img_cycle[audiotype1][mirindex]
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            self.custom_index[audiotype1] += 1
             if self.opt.transport=='rtmp':
                 self.streamer.stream_frame(image)
             else:
                 new_frame = VideoFrame.from_ndarray(image, format="rgb24")
                 asyncio.run_coroutine_threadsafe(video_track._queue.put(new_frame), loop)
-            self.customimg_index += 1
-        else:
-            self.customimg_index = 0
+        else: #推理视频+贴回
             outputs = self.trainer.test_gui_with_data(data, self.W, self.H)
             #print('-------ernerf time: ',time.time()-t)
             #print(f'[INFO] outputs shape ',outputs['image'].shape)
@@ -193,8 +221,10 @@ class NeRFReal:
                     asyncio.run_coroutine_threadsafe(video_track._queue.put(new_frame), loop)
             else: #fullbody human
                 #print("frame index:",data['index'])
-                image_fullbody = cv2.imread(os.path.join(self.opt.fullbody_img, str(data['index'][0])+'.jpg'))
-                image_fullbody = cv2.cvtColor(image_fullbody, cv2.COLOR_BGR2RGB)
+                #image_fullbody = cv2.imread(os.path.join(self.opt.fullbody_img, str(data['index'][0])+'.jpg'))
+                image_fullbody = self.fullbody_list_cycle[data['index'][0]]
+                #image_fullbody = self.imagecache.get_img(data['index'][0])
+                image_fullbody = cv2.cvtColor(image_fullbody, cv2.COLOR_BGR2RGB)                
                 start_x = self.opt.fullbody_offset_x  # 合并后小图片的起始x坐标
                 start_y = self.opt.fullbody_offset_y  # 合并后小图片的起始y坐标
                 image_fullbody[start_y:start_y+image.shape[0], start_x:start_x+image.shape[1]] = image
@@ -213,6 +243,8 @@ class NeRFReal:
         #if self.opt.asr:
         #     self.asr.warm_up()
         
+        self.init_customindex()
+
         if self.opt.transport=='rtmp':
             from rtmp_streaming import StreamerConfig, Streamer
             fps=25

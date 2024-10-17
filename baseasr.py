@@ -7,8 +7,9 @@ import multiprocessing as mp
 
 
 class BaseASR:
-    def __init__(self, opt):
+    def __init__(self, opt, parent=None):
         self.opt = opt
+        self.parent = parent
 
         self.fps = opt.fps # 20 ms per frame
         self.sample_rate = 16000
@@ -38,10 +39,17 @@ class BaseASR:
             type = 0
             #print(f'[INFO] get frame {frame.shape}')
         except queue.Empty:
-            frame = np.zeros(self.chunk, dtype=np.float32)
-            type = 1
+            if self.parent and self.parent.curr_state>1: #播放自定义音频
+                frame = self.parent.get_audio_stream(self.parent.curr_state)
+                type = self.parent.curr_state
+            else:
+                frame = np.zeros(self.chunk, dtype=np.float32)
+                type = 1
 
         return frame,type 
+
+    def is_audio_frame_empty(self)->bool:
+        return self.queue.empty()
 
     def get_audio_out(self):  #get origin audio pcm to nerf
         return self.output_queue.get()
