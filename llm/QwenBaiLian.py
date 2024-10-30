@@ -15,7 +15,7 @@ class QwenBaiLian:
         return responses
 
 def call_with_stream():
-    llm = QwenBaiLian(api_key='a**')
+    llm = QwenBaiLian(app_id='a****')
     answer = llm.chat(question="19*2+8/2等于多少")
     for response in answer:
         if response.status_code != HTTPStatus.OK:
