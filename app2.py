@@ -361,7 +361,7 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     #app.config.from_object(opt)
     #print(app.config)
-
+    opt.customopt = []
     if opt.model == 'ernerf':
         from ernerf.nerf_triplane.provider import NeRFDataset_Test
         from ernerf.nerf_triplane.utils import *
