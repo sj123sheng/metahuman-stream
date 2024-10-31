@@ -22,7 +22,6 @@ from musetalk.utils.utils import get_file_type,get_video_fps,datagen
 #from musetalk.utils.preprocessing import get_landmark_and_bbox,read_imgs,coord_placeholder
 from musetalk.utils.blending import get_image,get_image_prepare_material,get_image_blending
 from musetalk.utils.utils import load_all_model,load_diffusion_model,load_audio_model
-from ttsreal2 import EdgeTTS,VoitsTTS,XTTS
 
 from museasr import MuseASR
 import asyncio

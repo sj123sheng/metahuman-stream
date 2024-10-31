@@ -20,7 +20,7 @@ import soundfile as sf
 import av
 from fractions import Fraction
 
-from ttsreal import EdgeTTS,VoitsTTS,XTTS,CosyVoiceTTS
+from ttsreal2 import EdgeTTS,VoitsTTS,XTTS,CosyVoiceTTS
 
 from tqdm import tqdm
 def read_imgs(img_list):
