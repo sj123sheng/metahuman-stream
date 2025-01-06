@@ -1,3 +1,20 @@
+###############################################################################
+#  Copyright (C) 2024 LiveTalking@lipku https://github.com/lipku/LiveTalking
+#  email: lipku@foxmail.com
+# 
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  
+#       http://www.apache.org/licenses/LICENSE-2.0
+# 
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+###############################################################################
+
 import time
 import numpy as np
 import soundfile as sf
@@ -32,7 +49,7 @@ class BaseTTS:
         self.msgqueue = Queue()
         self.state = State.RUNNING
 
-    def pause_talk(self):
+    def flush_talk(self):
         self.msgqueue.queue.clear()
         self.state = State.PAUSE
 
@@ -138,7 +155,7 @@ class VoitsTTS(BaseTTS):
             'ref_audio_path':reffile,
             'prompt_text':reftext,
             'prompt_lang':language,
-            'media_type':'raw',
+            'media_type':'ogg',
             'streaming_mode':True
         }
         # req["text"] = text
@@ -162,7 +179,8 @@ class VoitsTTS(BaseTTS):
                 
             first = True
         
-            for chunk in res.iter_content(chunk_size=12800): # 1280 32K*20ms*2
+            for chunk in res.iter_content(chunk_size=None): #12800 1280 32K*20ms*2
+                print('chunk len:',len(chunk))
                 if first:
                     end = time.perf_counter()
                     print(f"gpt_sovits Time to first chunk: {end-start}s")
@@ -173,13 +191,29 @@ class VoitsTTS(BaseTTS):
         except Exception as e:
             print(e)
 
+    def __create_bytes_stream(self,byte_stream):
+        #byte_stream=BytesIO(buffer)
+        stream, sample_rate = sf.read(byte_stream) # [T*sample_rate,] float64
+        print(f'[INFO]tts audio stream {sample_rate}: {stream.shape}')
+        stream = stream.astype(np.float32)
+
+        if stream.ndim > 1:
+            print(f'[WARN] audio has {stream.shape[1]} channels, only use the first.')
+            stream = stream[:, 0]
+    
+        if sample_rate != self.sample_rate and stream.shape[0]>0:
+            print(f'[WARN] audio sample rate is {sample_rate}, resampling into {self.sample_rate}.')
+            stream = resampy.resample(x=stream, sr_orig=sample_rate, sr_new=self.sample_rate)
+
+        return stream
+
     def stream_tts(self,audio_stream):
         for chunk in audio_stream:
             if chunk is not None and len(chunk)>0:          
-                stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
-                stream = resampy.resample(x=stream, sr_orig=32000, sr_new=self.sample_rate)
-                #byte_stream=BytesIO(buffer)
-                #stream = self.__create_bytes_stream(byte_stream)
+                #stream = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767
+                #stream = resampy.resample(x=stream, sr_orig=32000, sr_new=self.sample_rate)
+                byte_stream=BytesIO(chunk)
+                stream = self.__create_bytes_stream(byte_stream)
                 streamlen = stream.shape[0]
                 idx=0
                 while streamlen >= self.chunk:

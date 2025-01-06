@@ -1,17 +1,35 @@
+###############################################################################
+#  Copyright (C) 2024 LiveTalking@lipku https://github.com/lipku/LiveTalking
+#  email: lipku@foxmail.com
+# 
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  
+#       http://www.apache.org/licenses/LICENSE-2.0
+# 
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+###############################################################################
+
 # server.py
 from flask import Flask, render_template,send_from_directory,request, jsonify
 from flask_sockets import Sockets
 import base64
 import time
 import json
-import gevent
-from gevent import pywsgi
-from geventwebsocket.handler import WebSocketHandler
+#import gevent
+#from gevent import pywsgi
+#from geventwebsocket.handler import WebSocketHandler
 import os
 import re
 import numpy as np
 from threading import Thread,Event
-import multiprocessing
+#import multiprocessing
+import torch.multiprocessing as mp
 
 from aiohttp import web
 import aiohttp
@@ -21,36 +39,19 @@ from aiortc.rtcrtpsender import RTCRtpSender
 from webrtc import HumanPlayer
 
 import argparse
+import random
 
 import shutil
 import asyncio
-import string
+import torch
 
 
 app = Flask(__name__)
-sockets = Sockets(app)
-nerfreals = []
-statreals = [] 
-
-    
-@sockets.route('/humanecho')
-def echo_socket(ws):
-    # 获取WebSocket对象
-    #ws = request.environ.get('wsgi.websocket')
-    # 如果没有获取到，返回错误信息
-    if not ws:
-        print('未建立连接！')
-        return 'Please use WebSocket'
-    # 否则，循环接收和发送消息
-    else:
-        print('建立连接！')
-        while True:
-            message = ws.receive()           
-            
-            if not message or len(message)==0:
-                return '输入信息为空'
-            else:                                
-                nerfreal.put_msg_txt(message)
+#sockets = Sockets(app)
+nerfreals = {}
+opt = None
+model = None
+avatar = None
 
 
 # def llm_response(message):
@@ -106,43 +107,44 @@ def llm_response(message,nerfreal):
     print(f"llm Time to last chunk: {end-start}s")
     nerfreal.put_msg_txt(result)            
 
-@sockets.route('/humanchat')
-def chat_socket(ws):
-    # 获取WebSocket对象
-    #ws = request.environ.get('wsgi.websocket')
-    # 如果没有获取到，返回错误信息
-    if not ws:
-        print('未建立连接！')
-        return 'Please use WebSocket'
-    # 否则，循环接收和发送消息
-    else:
-        print('建立连接！')
-        while True:
-            message = ws.receive()           
-            
-            if len(message)==0:
-                return '输入信息为空'
-            else:
-                res=llm_response(message)                           
-                nerfreal.put_msg_txt(res)
-
 #####webrtc###############################
 pcs = set()
+
+def randN(N):
+    '''生成长度为 N的随机数 '''
+    min = pow(10, N - 1)
+    max = pow(10, N)
+    return random.randint(min, max - 1)
+
+def build_nerfreal(sessionid):
+    opt.sessionid=sessionid
+    if opt.model == 'wav2lip':
+        from lipreal import LipReal
+        nerfreal = LipReal(opt,model,avatar)
+    elif opt.model == 'musetalk':
+        from musereal import MuseReal
+        nerfreal = MuseReal(opt,model,avatar)
+    elif opt.model == 'ernerf':
+        from nerfreal import NeRFReal
+        nerfreal = NeRFReal(opt,model,avatar)
+    elif opt.model == 'ultralight':
+        from lightreal import LightReal
+        nerfreal = LightReal(opt,model,avatar)
+    return nerfreal
 
 #@app.route('/offer', methods=['POST'])
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-    sessionid = len(nerfreals)
-    for index,value in enumerate(statreals):
-        if value == 0:
-            sessionid = index
-            break
-    if sessionid>=len(nerfreals):
+    if len(nerfreals) >= opt.max_session:
         print('reach max session')
         return -1
-    statreals[sessionid] = 1
+    sessionid = randN(6) #len(nerfreals)
+    print('sessionid=',sessionid)
+    nerfreals[sessionid] = None
+    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
+    nerfreals[sessionid] = nerfreal
     
     pc = RTCPeerConnection()
     pcs.add(pc)
@@ -153,10 +155,10 @@ async def offer(request):
         if pc.connectionState == "failed":
             await pc.close()
             pcs.discard(pc)
-            statreals[sessionid] = 0
+            del nerfreals[sessionid]
         if pc.connectionState == "closed":
             pcs.discard(pc)
-            statreals[sessionid] = 0
+            del nerfreals[sessionid]
 
     player = HumanPlayer(nerfreals[sessionid])
     audio_sender = pc.addTrack(player.audio)
@@ -187,7 +189,7 @@ async def human(request):
 
     sessionid = params.get('sessionid',0)
     if params.get('interrupt'):
-        nerfreals[sessionid].pause_talk()
+        nerfreals[sessionid].flush_talk()
 
     if params['type']=='echo':
         nerfreals[sessionid].put_msg_txt(params['text'])
@@ -280,7 +282,10 @@ async def post(url,data):
     except aiohttp.ClientError as e:
         print(f'Error: {e}')
 
-async def run(push_url):
+async def run(push_url,sessionid):
+    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
+    nerfreals[sessionid] = nerfreal
+
     pc = RTCPeerConnection()
     pcs.add(pc)
 
@@ -291,7 +296,7 @@ async def run(push_url):
             await pc.close()
             pcs.discard(pc)
 
-    player = HumanPlayer(nerfreals[0])
+    player = HumanPlayer(nerfreals[sessionid])
     audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)
 
@@ -302,7 +307,7 @@ async def run(push_url):
 # os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
 # os.environ['MULTIPROCESSING_METHOD'] = 'forkserver'                                                    
 if __name__ == '__main__':
-    multiprocessing.set_start_method('spawn')
+    mp.set_start_method('spawn')
     parser = argparse.ArgumentParser()
     parser.add_argument('--pose', type=str, default="data/data_kf.json", help="transforms.json, pose source")
     parser.add_argument('--au', type=str, default="data/au.csv", help="eye blink area")
@@ -448,76 +453,46 @@ if __name__ == '__main__':
         with open(opt.customvideo_config,'r') as file:
             opt.customopt = json.load(file)
 
-    if opt.model == 'ernerf':
-        from ernerf.nerf_triplane.provider import NeRFDataset_Test
-        from ernerf.nerf_triplane.utils import *
-        from ernerf.nerf_triplane.network import NeRFNetwork
-        from nerfreal import NeRFReal
-        # assert test mode
-        opt.test = True
-        opt.test_train = False
-        #opt.train_camera =True
-        # explicit smoothing
-        opt.smooth_path = True
-        opt.smooth_lips = True
-
-        assert opt.pose != '', 'Must provide a pose source'
-
-        # if opt.O:
-        opt.fp16 = True
-        opt.cuda_ray = True
-        opt.exp_eye = True
-        opt.smooth_eye = True
-
-        if opt.torso_imgs=='': #no img,use model output
-            opt.torso = True
-
-        # assert opt.cuda_ray, "Only support CUDA ray mode."
-        opt.asr = True
-
-        if opt.patch_size > 1:
-            # assert opt.patch_size > 16, "patch_size should > 16 to run LPIPS loss."
-            assert opt.num_rays % (opt.patch_size ** 2) == 0, "patch_size ** 2 should be dividable by num_rays."
-        seed_everything(opt.seed)
-        print(opt)
-
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = NeRFNetwork(opt)
-
-        criterion = torch.nn.MSELoss(reduction='none')
-        metrics = [] # use no metric in GUI for faster initialization...
-        print(model)
-        trainer = Trainer('ngp', opt, model, device=device, workspace=opt.workspace, criterion=criterion, fp16=opt.fp16, metrics=metrics, use_checkpoint=opt.ckpt)
-
-        test_loader = NeRFDataset_Test(opt, device=device).dataloader()
-        model.aud_features = test_loader._data.auds
-        model.eye_areas = test_loader._data.eye_area
-
+    if opt.model == 'ernerf':       
+        from nerfreal import NeRFReal,load_model,load_avatar
+        model = load_model(opt)
+        avatar = load_avatar(opt) 
+        
         # we still need test_loader to provide audio features for testing.
-        for k in range(opt.max_session):
-            opt.sessionid=k
-            nerfreal = NeRFReal(opt, trainer, test_loader)
-            nerfreals.append(nerfreal)
+        # for k in range(opt.max_session):
+        #     opt.sessionid=k
+        #     nerfreal = NeRFReal(opt, trainer, test_loader,audio_processor,audio_model)
+        #     nerfreals.append(nerfreal)
     elif opt.model == 'musetalk':
-        from musereal import MuseReal
+        from musereal import MuseReal,load_model,load_avatar,warm_up
         print(opt)
-        for k in range(opt.max_session):
-            opt.sessionid=k
-            nerfreal = MuseReal(opt)
-            nerfreals.append(nerfreal)
+        model = load_model()
+        avatar = load_avatar(opt.avatar_id) 
+        warm_up(opt.batch_size,model)      
+        # for k in range(opt.max_session):
+        #     opt.sessionid=k
+        #     nerfreal = MuseReal(opt,audio_processor,vae, unet, pe,timesteps)
+        #     nerfreals.append(nerfreal)
     elif opt.model == 'wav2lip':
-        from lipreal import LipReal
+        from lipreal import LipReal,load_model,load_avatar,warm_up
         print(opt)
-        for k in range(opt.max_session):
-            opt.sessionid=k
-            nerfreal = LipReal(opt)
-            nerfreals.append(nerfreal)
-    
-    for _ in range(opt.max_session):
-        statreals.append(0)
+        model = load_model("./models/wav2lip.pth")
+        avatar = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size,model,96)
+        # for k in range(opt.max_session):
+        #     opt.sessionid=k
+        #     nerfreal = LipReal(opt,model)
+        #     nerfreals.append(nerfreal)
+    elif opt.model == 'ultralight':
+        from lightreal import LightReal,load_model,load_avatar,warm_up
+        print(opt)
+        model = load_model(opt)
+        avatar = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size,avatar,160)
 
     if opt.transport=='rtmp':
         thread_quit = Event()
+        nerfreals[0] = build_nerfreal(0)
         rendthrd = Thread(target=nerfreals[0].render,args=(thread_quit,))
         rendthrd.start()
 
@@ -557,7 +532,11 @@ if __name__ == '__main__':
         site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
         loop.run_until_complete(site.start())
         if opt.transport=='rtcpush':
-            loop.run_until_complete(run(opt.push_url))
+            for k in range(opt.max_session):
+                push_url = opt.push_url
+                if k!=0:
+                    push_url = opt.push_url+str(k)
+                loop.run_until_complete(run(push_url,k))
         loop.run_forever()    
     #Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
     run_server(web.AppRunner(appasync))

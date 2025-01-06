@@ -1,3 +1,20 @@
+###############################################################################
+#  Copyright (C) 2024 LiveTalking@lipku https://github.com/lipku/LiveTalking
+#  email: lipku@foxmail.com
+# 
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  
+#       http://www.apache.org/licenses/LICENSE-2.0
+# 
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+###############################################################################
+
 import math
 import torch
 import numpy as np
@@ -15,13 +32,13 @@ import copy
 import queue
 from queue import Queue
 from threading import Thread, Event
-from io import BytesIO
-import multiprocessing as mp
+import torch.multiprocessing as mp
 
 from musetalk.utils.utils import get_file_type,get_video_fps,datagen
 #from musetalk.utils.preprocessing import get_landmark_and_bbox,read_imgs,coord_placeholder
 from musetalk.utils.blending import get_image,get_image_prepare_material,get_image_blending
 from musetalk.utils.utils import load_all_model,load_diffusion_model,load_audio_model
+from musetalk.whisper.audio2feature import Audio2Feature
 
 from museasr import MuseASR
 import asyncio
@@ -29,6 +46,68 @@ from av import AudioFrame, VideoFrame
 from basereal import BaseReal
 
 from tqdm import tqdm
+
+def load_model():
+    # load model weights
+    audio_processor,vae, unet, pe = load_all_model()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    timesteps = torch.tensor([0], device=device)
+    pe = pe.half()
+    vae.vae = vae.vae.half()
+    #vae.vae.share_memory()
+    unet.model = unet.model.half()
+    #unet.model.share_memory()
+    return vae, unet, pe, timesteps, audio_processor
+
+def load_avatar(avatar_id):
+    #self.video_path = '' #video_path
+    #self.bbox_shift = opt.bbox_shift
+    avatar_path = f"./data/avatars/{avatar_id}"
+    full_imgs_path = f"{avatar_path}/full_imgs" 
+    coords_path = f"{avatar_path}/coords.pkl"
+    latents_out_path= f"{avatar_path}/latents.pt"
+    video_out_path = f"{avatar_path}/vid_output/"
+    mask_out_path =f"{avatar_path}/mask"
+    mask_coords_path =f"{avatar_path}/mask_coords.pkl"
+    avatar_info_path = f"{avatar_path}/avator_info.json"
+    # self.avatar_info = {
+    #     "avatar_id":self.avatar_id,
+    #     "video_path":self.video_path,
+    #     "bbox_shift":self.bbox_shift   
+    # }
+
+    input_latent_list_cycle = torch.load(latents_out_path)  #,weights_only=True
+    with open(coords_path, 'rb') as f:
+        coord_list_cycle = pickle.load(f)
+    input_img_list = glob.glob(os.path.join(full_imgs_path, '*.[jpJP][pnPN]*[gG]'))
+    input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+    frame_list_cycle = read_imgs(input_img_list)
+    with open(mask_coords_path, 'rb') as f:
+        mask_coords_list_cycle = pickle.load(f)
+    input_mask_list = glob.glob(os.path.join(mask_out_path, '*.[jpJP][pnPN]*[gG]'))
+    input_mask_list = sorted(input_mask_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+    mask_list_cycle = read_imgs(input_mask_list)
+    return frame_list_cycle,mask_list_cycle,coord_list_cycle,mask_coords_list_cycle,input_latent_list_cycle
+
+@torch.no_grad()
+def warm_up(batch_size,model):
+    # 预热函数
+    print('warmup model...')
+    vae, unet, pe, timesteps, audio_processor = model
+    #batch_size = 16
+    #timesteps = torch.tensor([0], device=unet.device)
+    whisper_batch = np.ones((batch_size, 50, 384), dtype=np.uint8)
+    latent_batch = torch.ones(batch_size, 8, 32, 32).to(unet.device)
+
+    audio_feature_batch = torch.from_numpy(whisper_batch)
+    audio_feature_batch = audio_feature_batch.to(device=unet.device, dtype=unet.model.dtype)
+    audio_feature_batch = pe(audio_feature_batch)
+    latent_batch = latent_batch.to(dtype=unet.model.dtype)
+    pred_latents = unet.model(latent_batch,
+                              timesteps,
+                              encoder_hidden_states=audio_feature_batch).sample
+    vae.decode_latents(pred_latents)
+
 def read_imgs(img_list):
     frames = []
     print('reading images...')
@@ -45,88 +124,90 @@ def __mirror_index(size, index):
         return res
     else:
         return size - res - 1 
+
 @torch.no_grad()
-def inference(render_event,batch_size,latents_out_path,audio_feat_queue,audio_out_queue,res_frame_queue,
-              ): #vae, unet, pe,timesteps
+def inference(render_event,batch_size,input_latent_list_cycle,audio_feat_queue,audio_out_queue,res_frame_queue,
+              vae, unet, pe,timesteps): #vae, unet, pe,timesteps
     
-    vae, unet, pe = load_diffusion_model()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    timesteps = torch.tensor([0], device=device)
-    pe = pe.half()
-    vae.vae = vae.vae.half()
-    unet.model = unet.model.half()
+    # vae, unet, pe = load_diffusion_model()
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # timesteps = torch.tensor([0], device=device)
+    # pe = pe.half()
+    # vae.vae = vae.vae.half()
+    # unet.model = unet.model.half()
     
-    input_latent_list_cycle = torch.load(latents_out_path)
     length = len(input_latent_list_cycle)
     index = 0
     count=0
     counttime=0
     print('start inference')
-    while True:
-        if render_event.is_set():
-            starttime=time.perf_counter()
-            try:
-                whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
-            except queue.Empty:
-                continue
-            is_all_silence=True
-            audio_frames = []
-            for _ in range(batch_size*2):
-                frame,type = audio_out_queue.get()
-                audio_frames.append((frame,type))
-                if type==0:
-                    is_all_silence=False
-            if is_all_silence:
-                for i in range(batch_size):
-                    res_frame_queue.put((None,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
-                    index = index + 1
-            else:
-                # print('infer=======')
-                t=time.perf_counter()
-                whisper_batch = np.stack(whisper_chunks)
-                latent_batch = []
-                for i in range(batch_size):
-                    idx = __mirror_index(length,index+i)
-                    latent = input_latent_list_cycle[idx]
-                    latent_batch.append(latent)
-                latent_batch = torch.cat(latent_batch, dim=0)
-                
-                # for i, (whisper_batch,latent_batch) in enumerate(gen):
-                audio_feature_batch = torch.from_numpy(whisper_batch)
-                audio_feature_batch = audio_feature_batch.to(device=unet.device,
-                                                                dtype=unet.model.dtype)
-                audio_feature_batch = pe(audio_feature_batch)
-                latent_batch = latent_batch.to(dtype=unet.model.dtype)
-                # print('prepare time:',time.perf_counter()-t)
-                # t=time.perf_counter()
-
-                pred_latents = unet.model(latent_batch, 
-                                            timesteps, 
-                                            encoder_hidden_states=audio_feature_batch).sample
-                # print('unet time:',time.perf_counter()-t)
-                # t=time.perf_counter()
-                recon = vae.decode_latents(pred_latents)
-                # print('vae time:',time.perf_counter()-t)
-                #print('diffusion len=',len(recon))
-                counttime += (time.perf_counter() - t)
-                count += batch_size
-                #_totalframe += 1
-                if count>=100:
-                    print(f"------actual avg infer fps:{count/counttime:.4f}")
-                    count=0
-                    counttime=0
-                for i,res_frame in enumerate(recon):
-                    #self.__pushmedia(res_frame,loop,audio_track,video_track)
-                    res_frame_queue.put((res_frame,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
-                    index = index + 1
-                #print('total batch time:',time.perf_counter()-starttime)            
+    while render_event.is_set():
+        starttime=time.perf_counter()
+        try:
+            whisper_chunks = audio_feat_queue.get(block=True, timeout=1)
+        except queue.Empty:
+            continue
+        is_all_silence=True
+        audio_frames = []
+        for _ in range(batch_size*2):
+            frame,type = audio_out_queue.get()
+            audio_frames.append((frame,type))
+            if type==0:
+                is_all_silence=False
+        if is_all_silence:
+            for i in range(batch_size):
+                res_frame_queue.put((None,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
+                index = index + 1
         else:
-            time.sleep(1)
+            # print('infer=======')
+            t=time.perf_counter()
+            whisper_batch = np.stack(whisper_chunks)
+            latent_batch = []
+            for i in range(batch_size):
+                idx = __mirror_index(length,index+i)
+                latent = input_latent_list_cycle[idx]
+                latent_batch.append(latent)
+            latent_batch = torch.cat(latent_batch, dim=0)
+            
+            # for i, (whisper_batch,latent_batch) in enumerate(gen):
+            audio_feature_batch = torch.from_numpy(whisper_batch)
+            audio_feature_batch = audio_feature_batch.to(device=unet.device,
+                                                            dtype=unet.model.dtype)
+            audio_feature_batch = pe(audio_feature_batch)
+            latent_batch = latent_batch.to(dtype=unet.model.dtype)
+            # print('prepare time:',time.perf_counter()-t)
+            # t=time.perf_counter()
+
+            pred_latents = unet.model(latent_batch, 
+                                        timesteps, 
+                                        encoder_hidden_states=audio_feature_batch).sample
+            # print('unet time:',time.perf_counter()-t)
+            # t=time.perf_counter()
+            recon = vae.decode_latents(pred_latents)
+            # infer_inqueue.put((whisper_batch,latent_batch,sessionid))
+            # recon,outsessionid = infer_outqueue.get()
+            # if outsessionid != sessionid:
+            #     print('outsessionid:',outsessionid,' mysessionid:',sessionid)
+
+            # print('vae time:',time.perf_counter()-t)
+            #print('diffusion len=',len(recon))
+            counttime += (time.perf_counter() - t)
+            count += batch_size
+            #_totalframe += 1
+            if count>=100:
+                print(f"------actual avg infer fps:{count/counttime:.4f}")
+                count=0
+                counttime=0
+            for i,res_frame in enumerate(recon):
+                #self.__pushmedia(res_frame,loop,audio_track,video_track)
+                res_frame_queue.put((res_frame,__mirror_index(length,index),audio_frames[i*2:i*2+2]))
+                index = index + 1
+            #print('total batch time:',time.perf_counter()-starttime)            
     print('musereal inference processor stop')
 
-@torch.no_grad()
 class MuseReal(BaseReal):
-    def __init__(self, opt):
+    @torch.no_grad()
+    def __init__(self, opt, model, avatar):
         super().__init__(opt)
         #self.opt = opt # shared with the trainer's opt to support in-place modification of rendering parameters.
         self.W = opt.W
@@ -134,60 +215,21 @@ class MuseReal(BaseReal):
 
         self.fps = opt.fps # 20 ms per frame
 
-        #### musetalk
-        self.avatar_id = opt.avatar_id
-        self.video_path = '' #video_path
-        self.bbox_shift = opt.bbox_shift
-        self.avatar_path = f"./data/avatars/{self.avatar_id}"
-        self.full_imgs_path = f"{self.avatar_path}/full_imgs" 
-        self.coords_path = f"{self.avatar_path}/coords.pkl"
-        self.latents_out_path= f"{self.avatar_path}/latents.pt"
-        self.video_out_path = f"{self.avatar_path}/vid_output/"
-        self.mask_out_path =f"{self.avatar_path}/mask"
-        self.mask_coords_path =f"{self.avatar_path}/mask_coords.pkl"
-        self.avatar_info_path = f"{self.avatar_path}/avator_info.json"
-        self.avatar_info = {
-            "avatar_id":self.avatar_id,
-            "video_path":self.video_path,
-            "bbox_shift":self.bbox_shift   
-        }
         self.batch_size = opt.batch_size
         self.idx = 0
         self.res_frame_queue = mp.Queue(self.batch_size*2)
-        self.__loadmodels()
-        self.__loadavatar()
+
+        self.vae, self.unet, self.pe, self.timesteps, self.audio_processor = model
+        self.frame_list_cycle,self.mask_list_cycle,self.coord_list_cycle,self.mask_coords_list_cycle, self.input_latent_list_cycle = avatar
+        #self.__loadavatar()
 
         self.asr = MuseASR(opt,self,self.audio_processor)
         self.asr.warm_up()
-        #self.__warm_up()
         
         self.render_event = mp.Event()
-        mp.Process(target=inference, args=(self.render_event,self.batch_size,self.latents_out_path,
-                                           self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
-                                           )).start() #self.vae, self.unet, self.pe,self.timesteps
 
-    def __loadmodels(self):
-        # load model weights
-        self.audio_processor= load_audio_model()
-        # self.audio_processor, self.vae, self.unet, self.pe = load_all_model()
-        # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # self.timesteps = torch.tensor([0], device=device)
-        # self.pe = self.pe.half()
-        # self.vae.vae = self.vae.vae.half()
-        # self.unet.model = self.unet.model.half()
-
-    def __loadavatar(self):
-        #self.input_latent_list_cycle = torch.load(self.latents_out_path)
-        with open(self.coords_path, 'rb') as f:
-            self.coord_list_cycle = pickle.load(f)
-        input_img_list = glob.glob(os.path.join(self.full_imgs_path, '*.[jpJP][pnPN]*[gG]'))
-        input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-        self.frame_list_cycle = read_imgs(input_img_list)
-        with open(self.mask_coords_path, 'rb') as f:
-            self.mask_coords_list_cycle = pickle.load(f)
-        input_mask_list = glob.glob(os.path.join(self.mask_out_path, '*.[jpJP][pnPN]*[gG]'))
-        input_mask_list = sorted(input_mask_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-        self.mask_list_cycle = read_imgs(input_mask_list)
+    def __del__(self):
+        print(f'musereal({self.sessionid}) delete')
     
 
     def __mirror_index(self, index):
@@ -286,6 +328,9 @@ class MuseReal(BaseReal):
         process_thread.start()
 
         self.render_event.set() #start infer process render
+        Thread(target=inference, args=(self.render_event,self.batch_size,self.input_latent_list_cycle,
+                                           self.asr.feat_queue,self.asr.output_queue,self.res_frame_queue,
+                                           self.vae, self.unet, self.pe,self.timesteps)).start() #mp.Process
         count=0
         totaltime=0
         _starttime=time.perf_counter()
